@@ -1,89 +1,126 @@
-import express from "express";
-import cors from "cors";
-import jwt from "jsonwebtoken";
-import bcrypt from "bcryptjs";
-import Database from "better-sqlite3";
-import path from "path";
-import { fileURLToPath } from "url";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const express = require('express');
+const cookieParser = require('cookie-parser');
+const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
+
 const app = express();
 const PORT = process.env.PORT || 3000;
-const JWT_SECRET = process.env.JWT_SECRET || "change-this-secret";
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "admin123";
-const WORKER_PASSWORD = process.env.WORKER_PASSWORD || "1234";
+const DATA_FILE = process.env.DB_PATH || path.join(__dirname, 'data', 'karaoke.json');
+const SESSION_SECRET = process.env.SESSION_SECRET || 'change_this_secret';
+const USERS = {
+  [process.env.ADMIN_USER || 'admin']: { password: process.env.ADMIN_PASS || 'admin123', role: 'admin' },
+  [process.env.WORKER_USER || 'worker']: { password: process.env.WORKER_PASS || '1234', role: 'worker' },
+};
 
-const db = new Database(path.join(__dirname, "data.sqlite"));
-db.pragma("journal_mode = WAL");
-db.exec(`
-CREATE TABLE IF NOT EXISTS app_state (
-  id INTEGER PRIMARY KEY CHECK (id=1),
-  sessions_json TEXT NOT NULL DEFAULT '{}',
-  history_json TEXT NOT NULL DEFAULT '[]',
-  custom_menu_json TEXT NOT NULL DEFAULT '[]',
-  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_by TEXT
-);
-CREATE TABLE IF NOT EXISTS users (
-  username TEXT PRIMARY KEY,
-  password_hash TEXT NOT NULL,
-  role TEXT NOT NULL CHECK(role IN ('admin','worker'))
-);
-`);
+const sessions = new Map();
 
-function upsertUser(username, password, role) {
-  const hash = bcrypt.hashSync(password, 10);
-  db.prepare(`INSERT INTO users(username,password_hash,role) VALUES(?,?,?)
-    ON CONFLICT(username) DO UPDATE SET password_hash=excluded.password_hash, role=excluded.role`).run(username, hash, role);
-}
-upsertUser('admin', ADMIN_PASSWORD, 'admin');
-upsertUser('worker', WORKER_PASSWORD, 'worker');
-db.prepare(`INSERT OR IGNORE INTO app_state(id) VALUES(1)`).run();
-
-app.use(cors());
-app.use(express.json({ limit: '2mb' }));
-app.use(express.static(path.join(__dirname, 'public')));
-
-function auth(req, res, next) {
-  const authHeader = req.headers.authorization || '';
-  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
-  if (!token) return res.status(401).json({ error: 'Нэвтрэх шаардлагатай' });
-  try {
-    req.user = jwt.verify(token, JWT_SECRET);
-    next();
-  } catch {
-    res.status(401).json({ error: 'Token хүчингүй байна' });
+function ensureDataFile() {
+  fs.mkdirSync(path.dirname(DATA_FILE), { recursive: true });
+  if (!fs.existsSync(DATA_FILE)) {
+    fs.writeFileSync(DATA_FILE, JSON.stringify({ sessions: {}, history: [], customMenu: [] }, null, 2), 'utf8');
   }
 }
+
+function readState() {
+  ensureDataFile();
+  try {
+    return JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
+  } catch (e) {
+    return { sessions: {}, history: [], customMenu: [] };
+  }
+}
+
+function writeState(state) {
+  ensureDataFile();
+  fs.writeFileSync(DATA_FILE, JSON.stringify(state, null, 2), 'utf8');
+}
+
+function sign(token) {
+  return crypto.createHmac('sha256', SESSION_SECRET).update(token).digest('hex');
+}
+
+function makeCookie(res, token) {
+  res.cookie('srk_session', `${token}.${sign(token)}`, {
+    httpOnly: true,
+    sameSite: 'lax',
+    secure: false,
+    maxAge: 1000 * 60 * 60 * 24 * 7,
+  });
+}
+
+function getUserFromReq(req) {
+  const raw = req.cookies.srk_session;
+  if (!raw) return null;
+  const [token, sig] = raw.split('.');
+  if (!token || !sig || sign(token) !== sig) return null;
+  return sessions.get(token) || null;
+}
+
+function authRequired(req, res, next) {
+  const user = getUserFromReq(req);
+  if (!user) return res.status(401).json({ error: 'Нэвтрэх шаардлагатай' });
+  req.user = user;
+  next();
+}
+
+app.use(express.json({ limit: '2mb' }));
+app.use(cookieParser());
+app.use(express.static(path.join(__dirname, 'public')));
 
 app.post('/api/login', (req, res) => {
   const { username, password } = req.body || {};
-  const row = db.prepare('SELECT username,password_hash,role FROM users WHERE username=?').get((username || '').toLowerCase());
-  if (!row || !bcrypt.compareSync(password || '', row.password_hash)) {
+  const record = USERS[(username || '').toLowerCase()];
+  if (!record || record.password !== password) {
     return res.status(401).json({ error: 'Нэр эсвэл нууц үг буруу байна' });
   }
-  const token = jwt.sign({ username: row.username, role: row.role }, JWT_SECRET, { expiresIn: '7d' });
-  res.json({ username: row.username, role: row.role, token });
+  const token = crypto.randomBytes(24).toString('hex');
+  const user = { username: (username || '').toLowerCase(), role: record.role };
+  sessions.set(token, user);
+  makeCookie(res, token);
+  res.json({ ok: true, user });
 });
 
-app.get('/api/state', auth, (req, res) => {
-  const row = db.prepare('SELECT sessions_json,history_json,custom_menu_json,updated_at,updated_by FROM app_state WHERE id=1').get();
-  res.json({
-    sessions: JSON.parse(row.sessions_json || '{}'),
-    history: JSON.parse(row.history_json || '[]'),
-    customMenu: JSON.parse(row.custom_menu_json || '[]'),
-    updatedAt: row.updated_at,
-    updatedBy: row.updated_by
-  });
-});
-
-app.post('/api/state', auth, (req, res) => {
-  const { sessions = {}, history = [], customMenu = [] } = req.body || {};
-  db.prepare(`UPDATE app_state SET sessions_json=?, history_json=?, custom_menu_json=?, updated_at=CURRENT_TIMESTAMP, updated_by=? WHERE id=1`)
-    .run(JSON.stringify(sessions), JSON.stringify(history), JSON.stringify(customMenu), req.user.username);
+app.post('/api/logout', (req, res) => {
+  const raw = req.cookies.srk_session;
+  if (raw) {
+    const [token] = raw.split('.');
+    sessions.delete(token);
+  }
+  res.clearCookie('srk_session');
   res.json({ ok: true });
 });
 
-app.get('/api/health', (_req, res) => res.json({ ok: true }));
-app.listen(PORT, () => console.log(`SR Karaoke ready on http://localhost:${PORT}`));
+app.get('/api/me', (req, res) => {
+  const user = getUserFromReq(req);
+  if (!user) return res.json({ loggedIn: false });
+  res.json({ loggedIn: true, user });
+});
+
+app.get('/api/state', authRequired, (req, res) => {
+  res.json(readState());
+});
+
+app.post('/api/state', authRequired, (req, res) => {
+  const body = req.body || {};
+  const nextState = {
+    sessions: body.sessions || {},
+    history: Array.isArray(body.history) ? body.history : [],
+    customMenu: Array.isArray(body.customMenu) ? body.customMenu : [],
+    updatedAt: Date.now(),
+    updatedBy: req.user.username,
+  };
+  writeState(nextState);
+  res.json({ ok: true });
+});
+
+app.get('*', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
+app.listen(PORT, () => {
+  ensureDataFile();
+  console.log(`SR Karaoke Live ажиллаж байна: http://localhost:${PORT}`);
+  console.log(`State file: ${DATA_FILE}`);
+});

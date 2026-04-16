@@ -303,35 +303,11 @@ function workDateStr(ts){return workDate(ts).toDateString();}
 function workDateLabel(ts){return workDate(ts).toLocaleDateString('mn-MN',{year:'numeric',month:'long',day:'numeric',weekday:'long'});}
 const mnTime=d=>new Date(d).toLocaleTimeString('mn-MN',{hour:'2-digit',minute:'2-digit'});
 
-
-let saveTimer=null;
-async function persistState(){
-  try{
-    await fetch('/api/state',{
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({sessions,history,customMenu})
-    });
-  }catch(e){console.error('State save failed',e);}
-}
-function save(){
-  clearTimeout(saveTimer);
-  saveTimer=setTimeout(()=>{persistState();},150);
-}
-async function load(){
-  try{
-    const res=await fetch('/api/state',{credentials:'same-origin'});
-    const d=await res.json();
-    sessions=d.sessions||{};
-    history=d.history||[];
-    customMenu=d.customMenu||[];
-  }catch(e){
-    console.error('State load failed',e);
-    sessions={};history=[];customMenu=[];
-  }
-}
+function save(){try{localStorage.setItem('krs2',JSON.stringify({sessions,history,customMenu}));}catch(e){}}
+function load(){try{const d=JSON.parse(localStorage.getItem('krs2')||'{}');sessions=d.sessions||{};history=d.history||[];customMenu=d.customMenu||[];}catch(e){sessions={};history=[];customMenu=[];}}
 
 let sessions={},history=[],customMenu=[],currentRole='',currentUser='',selPkg=-1,nytSongs=3,modalRid=null,modalCat=0;
+load();
 
 function showPage(p){
   document.querySelectorAll('.page').forEach(x=>x.classList.remove('active'));
@@ -858,11 +834,11 @@ function updateClock(){
 }
 
 
-
 // ===== LOGIN =====
-async function doLogout(){
+const USERS={admin:{pass:'admin123',role:'admin'},worker:{pass:'1234',role:'worker'}};
+
+function doLogout(){
   if(!confirm('Гарах уу?'))return;
-  try{ await fetch('/api/logout',{method:'POST'}); }catch(e){}
   currentUser='';currentRole='';
   document.getElementById('login-screen').style.display='flex';
   document.getElementById('main-wrap').style.display='none';
@@ -871,30 +847,18 @@ async function doLogout(){
   document.getElementById('li-err').textContent='';
 }
 
-async function doLogin(){
+function doLogin(){
   const u=document.getElementById('li-user').value.trim().toLowerCase();
   const p=document.getElementById('li-pass').value;
-  try{
-    const res=await fetch('/api/login',{
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({username:u,password:p})
-    });
-    const data=await res.json();
-    if(res.ok && data.ok){
-      currentUser=data.user.username;
-      currentRole=data.user.role;
-      document.getElementById('login-screen').style.display='none';
-      document.getElementById('main-wrap').style.display='block';
-      const ul=document.getElementById('user-label');if(ul)ul.textContent=currentUser;
-      document.getElementById('li-err').textContent='';
-      applyRole();
-      renderRooms();
-    } else {
-      document.getElementById('li-err').textContent=data.error||'Нэр эсвэл нууц үг буруу байна';
-    }
-  }catch(e){
-    document.getElementById('li-err').textContent='Сервертэй холбогдож чадсангүй';
+  if(USERS[u]&&USERS[u].pass===p){
+    currentUser=u;currentRole=USERS[u].role;
+    document.getElementById('login-screen').style.display='none';
+    document.getElementById('main-wrap').style.display='block';
+    const ul=document.getElementById('user-label');if(ul)ul.textContent=u;
+    applyRole();
+    renderRooms();
+  } else {
+    document.getElementById('li-err').textContent='Нэр эсвэл нууц үг буруу байна';
   }
 }
 
@@ -1047,32 +1011,9 @@ function removeItem(catName,itemName){
 const _sp=showPage;
 showPage=function(p){_sp(p);if(p==='menu')renderMenuPage();};
 
-
-async function initApp(){
-  await load();
-  updateClock();
-  try{
-    const res=await fetch('/api/me');
-    const data=await res.json();
-    if(data.loggedIn){
-      currentUser=data.user.username;
-      currentRole=data.user.role;
-      document.getElementById('login-screen').style.display='none';
-      document.getElementById('main-wrap').style.display='block';
-      const ul=document.getElementById('user-label');if(ul)ul.textContent=currentUser;
-      applyRole();
-      renderRooms();
-    }else{
-      document.getElementById('login-screen').style.display='flex';
-      document.getElementById('main-wrap').style.display='none';
-    }
-  }catch(e){
-    document.getElementById('login-screen').style.display='flex';
-    document.getElementById('main-wrap').style.display='none';
-  }
-}
+renderRooms();
 setInterval(updateClock,1000);
-initApp();
+updateClock();
 </script>
 </div><!-- /main-wrap -->
 </body>

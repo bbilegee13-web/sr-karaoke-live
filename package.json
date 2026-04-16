@@ -1,16 +1,13 @@
 {
-  "name": "sr-karaoke-ready",
+  "name": "sr-karaoke-live",
   "version": "1.0.0",
   "private": true,
-  "type": "module",
+  "type": "commonjs",
   "scripts": {
     "start": "node server.js"
   },
   "dependencies": {
-    "bcryptjs": "^2.4.3",
-    "better-sqlite3": "^11.7.0",
-    "cors": "^2.8.5",
-    "express": "^4.21.2",
-    "jsonwebtoken": "^9.0.2"
+    "express": "^4.19.2",
+    "cookie-parser": "^1.4.6"
   }
 }
